@@ -59,32 +59,45 @@ class Agent():
         return self.vr <= 0.5
     
 
-    def isInFrontOf(self, another: 'Agent') -> bool:
+    def isInFrontOf(self, another: 'Agent') -> bool:            # TODO: tune the number
         deltaX = another.x - self.x
         deltaY = another.y - self.y
-        relAngle = np.arctan2(deltaY, deltaX)
-        facingDirectionDifference = abs(self.yaw - relAngle)
-        return deltaY > 1 and \
-            facingDirectionDifference < 0.1 and \
-            abs(deltaX) < 3                                 # TODO: tune the numbers
-    
+        angle = np.arctan2(deltaY, deltaX)
+        angleRelToFacingDirection = self.yaw - angle
+        return abs(angleRelToFacingDirection) < np.pi/3
 
-    def isAround(self, another: 'Agent') -> bool:
+
+    def isAround(self, another: 'Agent') -> bool:               # TODO: tune the number
         deltaX = another.x - self.x
         deltaY = another.y - self.y
         distance = np.sqrt(deltaX**2 + deltaY**2)
         direction = np.arctan2(deltaY, deltaX)  # Could use with vtheta or yaw?
-        return distance <= 0.5                              # TODO: tune the number
-    
+        return distance <= 0.5
+        
 
-    def canBeCuttingOutInFront(self, another: 'Agent') -> bool:
+    def canBeCuttingInInFront(self, another: 'Agent') -> bool:  # TODO: tune the numbers
+        deltaX = another.x - self.x
         deltaY = another.y - self.y
-        facingDirectionDifference = abs(another.yaw - self.yaw)
-        return deltaY > 1 and \
-            facingDirectionDifference > 0.2                 # TODO: tune the numbers
+        angle = np.arctan2(deltaY, deltaX)
+        angleRelToFacingDirection = self.yaw - angle
+        facingDirectionDifference = self.yaw - another.yaw
+        return abs(angleRelToFacingDirection) < 0.2 and \
+            abs(facingDirectionDifference) > 0.2 and \
+            angleRelToFacingDirection * facingDirectionDifference < 0.03   # opposite
     
 
-    def canBeDirectlyLeading(self, another: 'Agent') -> bool:
+    def canBeCuttingOutInFront(self, another: 'Agent') -> bool: # TODO: tune the numbers
+        deltaX = another.x - self.x
+        deltaY = another.y - self.y
+        angle = np.arctan2(deltaY, deltaX)
+        angleRelToFacingDirection = self.yaw - angle
+        facingDirectionDifference = self.yaw - another.yaw
+        return abs(angleRelToFacingDirection) < 0.2 and \
+            abs(facingDirectionDifference) > 0.2 and \
+            angleRelToFacingDirection * facingDirectionDifference > -0.03   # same
+    
+
+    def canBeDirectlyLeading(self, another: 'Agent') -> bool:   # TODO: tune the numbers
         '''
         Test for simple leading, when "self" is just in front of "another" at a very near distance
 
@@ -93,13 +106,13 @@ class Agent():
 
         deltaX = another.x - self.x
         deltaY = another.y - self.y
-        relAngle = np.arctan2(deltaY, deltaX)
-        deviationFromFront = abs(relAngle-self.yaw - np.pi/2)
-        facingDirectionDifference = abs(another.yaw - self.yaw)
-        return deltaX < 2 and \
-            deltaY < 10 and \
-            deviationFromFront < 0.1 and \
-            facingDirectionDifference < 0.1                 # TODO: tune the numbers
+        distance = np.sqrt(deltaX**2 + deltaY**2)
+        angle = np.arctan2(deltaY, deltaX)
+        angleRelToFacingDirection = self.yaw - angle
+        facingDirectionDifference = self.yaw - another.yaw
+        return distance < 15 and \
+            abs(angleRelToFacingDirection) < 0.1 and \
+            abs(facingDirectionDifference) < 0.1
     
 
 
@@ -277,7 +290,7 @@ def ClassifyInLaneFrame(ti, trajectories: Trajectories):
             leadingAgent.laNeg(), leadingAgent.laSmall(), \
             leadingAgent.laPos(), leadingAgent.vSmall()
 
-            leadCut = CheckIfLeadingAgentIsCuttingOut(leadingAgent, currentEgo, trajectories)
+            leadCut = CheckIfLeadingAgentIsCuttingOut(leadingAgent, ti, trajectories)
             
             break
 
@@ -306,18 +319,19 @@ def ClassifyStopAndWaitFrame(ti, trajectories: Trajectories):
     # '2.1.5 PedestrianCrossing'        has pedestrians
 
 
-    front: Agent = GetAgentInFrontOfEgo(ti, trajectories)
+    currentEgo = trajectories.getEgo(ti)
 
-    if front is not None:
-        if front.type == 'Vehicle':
+    for agent in trajectories.getNonEgoAgents(ti):
+        if agent.canBeDirectlyLeading(currentEgo) and agent.type == 'Vehicle':
             return u.secondClasses['2.1.4 LeadVehicleStppoed']
-        else:
+        if agent.isInFrontOf(currentEgo) and agent.type == 'Pedestrian':
             return u.secondClasses['2.1.5 PedestrianCrossing']
 
-    return '9.9.9 Invalid'      # well, whatever?
+    return '9.9.9 Invalid'
 
 
 '''Below are a few repetitive functions to leave room for individual optimization (turnleft, turnright, and gostraight)'''
+# TODO: implement those properly (they currently do not make sense)
 
 
 def ClassifyGoStraightFrame(ti, trajectories: Trajectories):
@@ -473,7 +487,7 @@ def GetPossibleCutInAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Traje
 
     for agent in trajectories.getNonEgoAgents(ti):
         for deltas, agentAnchor in enumerate(trajectories.getTrajectory(startTi, minDeltas, agent.id)):
-            if agentAnchor.isAround(egoAnchor) and agent.canBeCuttingInFrontOf(currentEgo):
+            if agentAnchor.isAround(egoAnchor) and agent.canBeCuttingInInFront(currentEgo):
                 possibleCutInAgents.append(agent)
                 minDeltas = deltas
                 break
@@ -481,21 +495,18 @@ def GetPossibleCutInAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Traje
     return possibleCutInAgents
 
         
-def GetLeadingAgentAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories) -> Agent:
+def GetLeadingAgentAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories) -> Agent | None:
     currentEgo = trajectories.getEgo(ti)
 
     for agent in trajectories.getNonEgoAgents(ti):
         if agent.isAround(egoAnchor) or agent.canBeDirectlyLeading(currentEgo):
             return agent
-
-
-def GetAgentInFrontOfEgo(ti, trajectories: Trajectories) -> Agent:
-    raise Exception('Unimplemented')
+    return None
 
 
 def CheckIfLeadingAgentIsCuttingOut(leadingAgent: Agent, currentEgo: Agent, trajectories: Trajectories) -> bool:
-    raise Exception('Unimplemented')
+    raise Exception('Unimplemented')    # TODO
 
     
 def GetCrossingAgentAroundAnchor(anchor: Agent, currentEgo: Agent, trajectories: Trajectories) -> Agent:
-    raise Exception('Unimplemented')
+    raise Exception('Unimplemented')    # TODO
