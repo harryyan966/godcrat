@@ -19,7 +19,8 @@ labelFnameSet:set = set(map(lambda x: x.name, labelPath.glob('*.csv')))
 
 fileNames:list = list(set.intersection(dataFnameSet, labelFnameSet))
 
-def GetRawDataFromOrigin():
+
+def GetRawDataFromOrigin(includeInvalid=False):
     allDf = []
     for fileName in tqdm(fileNames):
         data = pd.read_csv(dataPath / fileName)
@@ -33,6 +34,8 @@ def GetRawDataFromOrigin():
         label['third_class'] = label['third_class'].map(thirdClasses)
 
         df = data.merge(label, on='TIMESTAMP')
+        if includeInvalid:
+            df = df.fillna(-1)
         df = df.dropna()
         df['fileName'] = fileName
         df['first_class'] = df['first_class'].astype('int')
@@ -44,8 +47,8 @@ def GetRawDataFromOrigin():
     return pd.concat(allDf)
 
 
-def WriteRawDataToCache(csvName='out/raw.csv'):
-    rawData = GetRawDataFromOrigin()
+def WriteRawDataToCache(csvName='out/raw.csv', includeInvalid=False):
+    rawData = GetRawDataFromOrigin(includeInvalid=includeInvalid)
     fullDir = startDir / csvName
     fullDir.parent.mkdir(parents=True, exist_ok=True)
     rawData.to_csv(fullDir, index=False)
