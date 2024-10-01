@@ -290,7 +290,8 @@ def ClassifyInLaneFrame(ti, trajectories: Trajectories):
             leadingAgent.laNeg(), leadingAgent.laSmall(), \
             leadingAgent.laPos(), leadingAgent.vSmall()
 
-            leadCut = CheckIfLeadingAgentIsCuttingOut(leadingAgent, ti, trajectories)
+            currentEgo = trajectories.getEgo(ti)
+            leadCut = leadingAgent.canBeCuttingOutInFront(currentEgo)
             
             break
 
@@ -320,14 +321,16 @@ def ClassifyStopAndWaitFrame(ti, trajectories: Trajectories):
 
 
     currentEgo = trajectories.getEgo(ti)
+    
+    canBePedestrainsCrossing = False
 
     for agent in trajectories.getNonEgoAgents(ti):
         if agent.canBeDirectlyLeading(currentEgo) and agent.type == 'Vehicle':
             return u.secondClasses['2.1.4 LeadVehicleStppoed']
         if agent.isInFrontOf(currentEgo) and agent.type == 'Pedestrian':
-            return u.secondClasses['2.1.5 PedestrianCrossing']
+            canBePedestrainsCrossing = True
 
-    return '9.9.9 Invalid'
+    return u.secondClasses['2.1.5 PedestrianCrossing'] if canBePedestrainsCrossing else '9.9.9 Invalid'
 
 
 '''Below are a few repetitive functions to leave room for individual optimization (turnleft, turnright, and gostraight)'''
@@ -352,10 +355,10 @@ def ClassifyGoStraightFrame(ti, trajectories: Trajectories):
     for anchor in trajectories.getTrajectory(ti, maxDelta=SELF_FRAMES_AFTER, agentId='ego'):
 
         # Get the agent that most probably is crossing the currentEgo based on its relationship with the virtual agent
-        crossingAgent: Agent = GetCrossingAgentAroundAnchor(anchor, currentEgo, trajectories)
+        crossingAgents = GetPossibleCrossingAgentsAroundAnchor(anchor, ti, trajectories)
 
         # Set high-level variables based on the result and stop searching further into the future.
-        if crossingAgent is not None:
+        if len(crossingAgents) > 0:
             hasCross = True
             hasLead = False
             break
@@ -365,7 +368,7 @@ def ClassifyGoStraightFrame(ti, trajectories: Trajectories):
 
         # Set high-level variables based on the result and stop searching further into the future.
         if leadingAgent is not None:
-            cutIn = False
+            hasCross = False
             hasLead = True
             break
 
@@ -396,10 +399,10 @@ def ClassifyTurnLeftFrame(ti, trajectories: Trajectories):
     for anchor in trajectories.getTrajectory(ti, maxDelta=SELF_FRAMES_AFTER, agentId='ego'):
 
         # Get the agent that most probably is crossing the currentEgo based on its relationship with the virtual agent
-        crossingAgent: Agent = GetCrossingAgentAroundAnchor(anchor, currentEgo, trajectories)
+        crossingAgents = GetPossibleCrossingAgentsAroundAnchor(anchor, ti, trajectories)
 
         # Set high-level variables based on the result and stop searching further into the future.
-        if crossingAgent is not None:
+        if len(crossingAgents) > 0:
             hasCross = True
             hasLead = False
             break
@@ -409,7 +412,7 @@ def ClassifyTurnLeftFrame(ti, trajectories: Trajectories):
 
         # Set high-level variables based on the result and stop searching further into the future.
         if leadingAgent is not None:
-            cutIn = False
+            hasCross = False
             hasLead = True
             break
 
@@ -440,10 +443,10 @@ def ClassifyTurnRightFrame(ti, trajectories: Trajectories):
     for anchor in trajectories.getTrajectory(ti, maxDelta=SELF_FRAMES_AFTER, agentId='ego'):
 
         # Get the agent that most probably is crossing the currentEgo based on its relationship with the virtual agent
-        crossingAgent: Agent = GetCrossingAgentAroundAnchor(anchor, currentEgo, trajectories)
+        crossingAgents = GetPossibleCrossingAgentsAroundAnchor(anchor, ti, trajectories)
 
         # Set high-level variables based on the result and stop searching further into the future.
-        if crossingAgent is not None:
+        if len(crossingAgents) > 0:
             hasCross = True
             hasLead = False
             break
@@ -453,7 +456,7 @@ def ClassifyTurnRightFrame(ti, trajectories: Trajectories):
 
         # Set high-level variables based on the result and stop searching further into the future.
         if leadingAgent is not None:
-            cutIn = False
+            hasCross = False
             hasLead = True
             break
 
@@ -481,32 +484,58 @@ def GetPossibleCutInAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Traje
 
     possibleCutInAgents = []
 
-    startTi = ti + OTHERS_FRAMES_AFTER
-    maxDeltas = SELF_FRAMES_AFTER-OTHERS_FRAMES_AFTER
-    minDeltas = maxDeltas
+    startTi = ti                        # agents can be in the future route at least zero frames in the future
+    maxDeltas = OTHERS_FRAMES_AFTER     # agents can be in the future route at most OTHERS_FRAMES_AFTER frames in the future
+    minDeltas = maxDeltas               # everytime we find a cutin agent, we update the minDeltas, this way the most recent cutin agents are found
 
     for agent in trajectories.getNonEgoAgents(ti):
         for deltas, agentAnchor in enumerate(trajectories.getTrajectory(startTi, minDeltas, agent.id)):
+            # "agentAnchor" means the agent's position in the future
+            # this function basically tests whether any agent in the future will be on the
+            # future route of "currentEgo", and it specifically considers a specific point on the ego route 
+            # which is known as "egoAnchor"
+
             if agentAnchor.isAround(egoAnchor) and agent.canBeCuttingInInFront(currentEgo):
                 possibleCutInAgents.append(agent)
-                minDeltas = deltas
+
+                if deltas < minDeltas:
+                    possibleCutInAgents.clear()
+                    minDeltas = deltas
+
+                # this break means this agent is classified as "possible to cut in" already
                 break
     
     return possibleCutInAgents
 
-        
+
 def GetLeadingAgentAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories) -> Agent | None:
     currentEgo = trajectories.getEgo(ti)
 
     for agent in trajectories.getNonEgoAgents(ti):
         if agent.isAround(egoAnchor) or agent.canBeDirectlyLeading(currentEgo):
+            # the "or" in this statement ensures the case where currentEgo has stopped and does not have 
+            # a trajectory that can be used to decide on leading agents. 
             return agent
     return None
 
 
-def CheckIfLeadingAgentIsCuttingOut(leadingAgent: Agent, currentEgo: Agent, trajectories: Trajectories) -> bool:
-    raise Exception('Unimplemented')    # TODO
+def GetPossibleCrossingAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories) -> list:
+    currentEgo = trajectories.getEgo(ti)
 
-    
-def GetCrossingAgentAroundAnchor(anchor: Agent, currentEgo: Agent, trajectories: Trajectories) -> Agent:
-    raise Exception('Unimplemented')    # TODO
+    possibleCrossingAgents = []
+
+    startTi = ti-OTHERS_FRAMES_BEFORE
+    maxDeltas = ti+OTHERS_FRAMES_AFTER
+
+    for agent in trajectories.getNonEgoAgents(ti):
+        for agentAnchor in trajectories.getTrajectory(startTi, maxDeltas, agent.id):
+            # "agentAnchor" means the agent's position in the future
+            # this function basically tests whether any agent in the past or future will be on the
+            # future route of "currentEgo", and it specifically considers a specific point on the ego route 
+            # which is known as "egoAnchor"
+
+            if agentAnchor.isAround(egoAnchor) and agent.canBeCrossing(currentEgo):
+                possibleCrossingAgents.append(agent)
+
+                # this break means this agent is classified as "possible to cut in" already
+                break
