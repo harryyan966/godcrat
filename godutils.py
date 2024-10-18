@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import cratutils as u
+import helpers as h
 import matplotlib.pyplot as plt
 
 
@@ -29,108 +30,148 @@ class Agent():
             agentRow['V_Y'],
             agentRow['A_X'],
             agentRow['A_Y'],
-            (agentRow['YAW']+90)%(360)*np.pi/180,   # converting to radian in standard xy coordinate
+            h.transformRawYaw(agentRow['YAW']),
             agentRow['TRACK_ID'],
             agentRow['OBJECT_TYPE']
         )
 
-        self.ar = np.sqrt(self.ax**2 + self.ay**2)
-        self.atheta = np.arctan2(self.ay, self.ax)
+        self.ar = h.dist(self.ax, self.ay)
+        self.atheta = h.arctan(self.ax, self.ay)
 
-        self.vr = np.sqrt(self.vx**2 + self.vy**2)
-        self.vtheta = np.arctan2(self.vy, self.vx)
+        self.vr = h.dist(self.vx, self.vy)
+        self.vtheta = h.arctan(self.vx, self.vy)
 
-        self.r = np.sqrt(self.x**2 + self.y**2)
-        self.theta = np.arctan2(self.y, self.x)
+        self.r = h.dist(self.x, self.y)
+        self.rtheta = h.arctan(self.x, self.y)
         
         # projection of acceleration vector to speed vector, "l" stands for "leading"
-        self.lar = self.ar * np.cos(self.vtheta - self.atheta)
+        self.f_ar = self.ar * np.cos(self.vtheta - self.atheta)
 
     
-    def laSmall(self) -> bool:      # TODO: tune the number (currently 0.5) for these four functions 
+    def faSmall(self) -> bool:      # TODO: tune the number (currently 0.5) for these four functions 
         '''
-        Stands for "as (L)eading, (A)cceleration is (Small)"
+        Stands for "(F)orward (A)cceleration (Small)"
 
         Same applies for the three functions below named like this
         '''
-        return abs(self.lar) <= 0.5
+        return abs(self.f_ar) <= 0.5
     
 
-    def laNeg(self) -> bool:
-        return self.lar > -0.5
+    def faNeg(self) -> bool:
+        return self.f_ar > -0.5
 
 
-    def laPos(self) -> bool:
-        return self.lar > 0.5
+    def faPos(self) -> bool:
+        return self.f_ar > 0.5
     
 
     def vSmall(self) -> bool:
         return self.vr <= 0.5
     
 
-    def isInFrontOf(self, another: 'Agent') -> bool:            # TODO: tune the number
-        deltaX = another.x - self.x
-        deltaY = another.y - self.y
-        angle = np.arctan2(deltaY, deltaX)
-        angleRelToFacingDirection = self.yaw - angle
-        return abs(angleRelToFacingDirection) < np.pi/3
+    def isInFrontOf(self, me: 'Agent') -> bool:
+        # dx, dy are "self"'s distance relative to "me"
+
+        dx = self.x - me.x
+        dy = self.y - me.y
+
+        return dy >= dx ** 2
+    
+
+    def matchAnchorAsLeading(self, anchor: 'Agent') -> bool:
+        dx = self.x - anchor.x
+        dy = self.y - anchor.y
+
+        distance = h.dist(dx, dy)
+        direction = h.to180scale(h.arctan(dx, dy) - anchor.yaw)
+
+        fd = distance * h.cos(direction)    # see DEVNOTES for explanation
+        cd = distance * h.sin(direction)
+        vdd = h.to180scale(self.vtheta - anchor.vtheta)
+
+        return abs(fd) < 5 \
+        and abs(cd) < 3 \
+        and abs(vdd) < 30
 
 
-    def isAround(self, another: 'Agent') -> bool:               # TODO: tune the number
-        deltaX = another.x - self.x
-        deltaY = another.y - self.y
-        distance = np.sqrt(deltaX**2 + deltaY**2)
-        direction = np.arctan2(deltaY, deltaX)  # Could use with vtheta or yaw?
-        return distance <= 0.5
+    def isLeadingDirectly(self, ego: 'Agent') -> bool:
+        dx = self.x - ego.x
+        dy = self.y - ego.y
+
+        distance = h.dist(dx, dy)
+        direction = h.to180scale(h.arctan(dx, dy) - ego.yaw)
+
+        fd = distance * h.cos(direction)    # see DEVNOTES for explanation
+        cd = distance * h.sin(direction)
+        yd = h.to180scale(self.yaw - ego.yaw)         # Yaw distance
+
+        return abs(cd) < 2 \
+        and 1 < fd < 20 \
+        and abs(yd) < 10
+
+
+    def matchAnchorAsCrossing(self, anchor: 'Agent') -> bool:
+        dx = self.x - anchor.x
+        dy = self.y - anchor.y
+
+        distance = h.dist(dx, dy)
+        direction = h.to180scale(h.arctan(dx, dy) - anchor.yaw)
+
+        fd = distance * h.cos(direction)    # see DEVNOTES for explanation
+        cd = distance * h.sin(direction)
+        vdd = h.to180scale(self.vtheta - anchor.vtheta)
+
+        return abs(fd) < 4 \
+        and abs(cd) < 8 \
+        and 60 < abs(vdd) < 120
+    
+
+    def canBeCuttingInInFront(self, ego: 'Agent') -> bool:
+        dx = self.x - ego.x
+        dy = self.y - ego.y
+
+        distance = h.dist(dx, dy)
+        direction = h.to180scale(h.arctan(dx, dy) - ego.yaw)
+
+        fd = distance * h.cos(direction)
+        cd = distance * h.sin(direction)            # positive when at left and negative when at right
+        vdd = h.to180scale(self.vtheta - ego.vtheta)    # positive when going lefter and negative when going righter
+        yd = h.to180scale(self.yaw - ego.yaw)       # positive when going left and negative when going right
+
+        # basically means "self" must be cutting into "ego"'s "front" and in front of "ego"
+        return yd * cd < 0 \
+        and vdd * cd < 0 \
+        and fd > 1 \
+    
+
+    def canBeCuttingOutInFront(self, ego: 'Agent') -> bool:
+        dx = self.x - ego.x
+        dy = self.y - ego.y
+
+        distance = h.dist(dx, dy)
+        direction = h.to180scale(h.arctan(dx, dy) - ego.yaw)
+
+        fd = distance * h.cos(direction)
+        cd = distance * h.sin(direction)            # positive when at left and negative when at right
+        vdd = h.to180scale(self.vtheta - ego.vtheta)    # positive when going lefter and negative when going righter
+        yd = h.to180scale(self.yaw - ego.yaw)       # positive when going left and negative when going right
+
+        # basically means "self" must be cutting out of "ego"'s "front" and in front of "ego"
+        return yd * cd > 0 \
+        and vdd * cd > 0 \
+        and fd > 1 \
         
-
-    def canBeCuttingInInFront(self, another: 'Agent') -> bool:  # TODO: tune the numbers
-        deltaX = another.x - self.x
-        deltaY = another.y - self.y
-        angle = np.arctan2(deltaY, deltaX)
-        angleRelToFacingDirection = self.yaw - angle
-        facingDirectionDifference = self.yaw - another.yaw
-        return abs(angleRelToFacingDirection) < 0.2 and \
-            abs(facingDirectionDifference) > 0.2 and \
-            angleRelToFacingDirection * facingDirectionDifference < 0.03   # opposite
-    
-
-    def canBeCuttingOutInFront(self, another: 'Agent') -> bool: # TODO: tune the numbers
-        deltaX = another.x - self.x
-        deltaY = another.y - self.y
-        angle = np.arctan2(deltaY, deltaX)
-        angleRelToFacingDirection = self.yaw - angle
-        facingDirectionDifference = self.yaw - another.yaw
-        return abs(angleRelToFacingDirection) < 0.2 and \
-            abs(facingDirectionDifference) > 0.2 and \
-            angleRelToFacingDirection * facingDirectionDifference > -0.03   # same
-    
-
-    def canBeDirectlyLeading(self, another: 'Agent') -> bool:   # TODO: tune the numbers
-        '''
-        Test for simple leading, when "self" is just in front of "another" at a very near distance
-
-        Used for classifying lead when the lead vehicle and, consequently, the ego, has stopped
-        '''
-
-        deltaX = another.x - self.x
-        deltaY = another.y - self.y
-        distance = np.sqrt(deltaX**2 + deltaY**2)
-        angle = np.arctan2(deltaY, deltaX)
-        angleRelToFacingDirection = self.yaw - angle
-        facingDirectionDifference = self.yaw - another.yaw
-        return distance < 15 and \
-            abs(angleRelToFacingDirection) < 0.1 and \
-            abs(facingDirectionDifference) < 0.1
-    
 
 
 ########## Agent Helper ##########
 
 
 
-def PlotAgents(agents, egoInd=0, size=50):
-    plt.figure(figsize=(8*size/50,8*size/50))
+def PlotAgents(agents, greenIf=None, showA=False, egoInd=0, xsize=50, ysize=50, ystart=0, dpi=80):
+    if greenIf is None:
+        greenIf = lambda agent, ego: agent.isInFrontOf(ego)
+
+    plt.figure(figsize=(ysize/4,xsize/4), dpi=dpi)
 
     # Draw cross axes
     plt.axhline(0, color='black', linewidth=0.8)
@@ -141,33 +182,40 @@ def PlotAgents(agents, egoInd=0, size=50):
     def getColor(agent: Agent):
         if agent.id == 'ego':
             return 'red'
-        if agent.isInFrontOf(ego):
+        if u.objectTypeNames[agent.type] != 'Vehicle':
+            return 'cyan'
+        if greenIf(agent, ego):
             return 'green'
         else:
-            return 'blue'
+            return 'purple'
     
     for agent in agents:
-        color = getColor(agent)
+        x = agent.x - ego.x
+        y = agent.y - ego.y
 
-        # Plot vector as an arrow
-        plt.arrow(agent.x, agent.y, agent.vx, agent.vy,
+        # Plot speed as an arrow
+        color = getColor(agent)
+        plt.arrow(x, y, agent.vx, agent.vy,
                   head_width=1, head_length=2, 
                   fc=color, 
                   ec=color)
         
+        if (showA):
+            # Plot acceleration as an arrow
+            accelerationColor = 'blue'
+            plt.arrow(x, y, agent.ax, agent.ay,
+                    head_width=1, head_length=2, 
+                    fc=accelerationColor, 
+                    ec=accelerationColor)
+        
         # Plot starting point
-        plt.plot(agent.x, agent.y, marker='s', color=color, markerfacecolor='white', markersize=15)
+        plt.plot(x, y, marker='s', color=color, markerfacecolor='white', markersize=13)
 
-        plt.text(agent.x, agent.y, f'{1}', ha='center', va='center', fontsize=11, color=color)
+        plt.text(x, y, f'{agent.id.split("-")[-1][:2]}', ha='center', va='center', fontsize=9, color=color)
     
 
-    # maxX = max(*[agent.x for agent in agents])
-    # minX = min(*[agent.x for agent in agents])
-    # maxY = max(*[agent.y for agent in agents])
-    # maxY = min(*[agent.y for agent in agents])
-
-    plt.xlim(-size, size)
-    plt.ylim(-size, size)
+    plt.xlim(-xsize, xsize)
+    plt.ylim(-ysize+ystart, ysize+ystart)
 
     plt.grid()
     plt.gca().set_aspect('equal', adjustable='box')
@@ -181,6 +229,7 @@ def PlotAgents(agents, egoInd=0, size=50):
 
 
 class Trajectories():
+
     def __init__(self, video):
         assert(len(video) == u.FRAMES_PER_VID)
         self.frames = video    # List<DataFrame>: list of frames (each frame contains rows of agents)
@@ -208,6 +257,12 @@ class Trajectories():
 
         else:
             raise Exception('Multiple agents have the same id.')
+        
+
+    def getAgentByCode(self, ti, agentId) -> Agent:
+        frame = self.getFrame(ti)
+        agentRows = frame[frame['TRACK_ID'].apply(lambda x : x.split("-")[-1] == str(agentId))]
+        return Agent(agentRows.iloc[0])
     
     
     def getTrajectory(self, tiStart, maxDelta, agentId):
@@ -246,6 +301,10 @@ class Trajectories():
         frame = self.getFrame(ti)
 
         return [Agent(agent) for _, agent in frame.iloc[1:].iterrows()]
+    
+
+    def plot(self, ti, *args, **kwargs):
+        PlotAgents([self.getEgo(ti), *self.getNonEgoAgents(ti)], *args, **kwargs)
     
 
 
@@ -566,7 +625,7 @@ def GetPossibleCutInAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Traje
             if agentAnchor is None:
                 continue
 
-            if agentAnchor.isAround(egoAnchor) and agent.canBeCuttingInInFront(currentEgo):
+            if agentAnchor.quiteSameAs(egoAnchor) and agent.canBeCuttingInInFront(currentEgo):
                 possibleCutInAgents.append(agent)
 
                 if deltas < minDeltas:
@@ -583,7 +642,7 @@ def GetLeadingAgentAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories
     currentEgo = trajectories.getEgo(ti)
 
     for agent in trajectories.getNonEgoAgents(ti):
-        if agent.isAround(egoAnchor) or agent.canBeDirectlyLeading(currentEgo):
+        if agent.quiteSameAs(egoAnchor) or agent.canBeDirectlyLeading(currentEgo):
             # the "or" in this statement ensures the case where currentEgo has stopped and does not have 
             # a trajectory that can be used to decide on leading agents. 
             return agent
@@ -609,7 +668,7 @@ def GetPossibleCrossingAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Tr
             if agentAnchor is None:
                 continue
 
-            if agentAnchor.isAround(egoAnchor) and agent.canBeCrossing(currentEgo):
+            if agentAnchor.crossingDirectly(egoAnchor) and agent.canBeCrossing(currentEgo):
                 possibleCrossingAgents.append(agent)
 
                 # this break means this agent is classified as "possible to cut in" already

@@ -10,38 +10,56 @@ TEST_SIZE = 0.1
 RANDOM_STATE = 42
 FRAMES_PER_VID = 40
 
+# Put your csvs directly in these directories
 startDir = Path('.')
-
 dataPath:Path = startDir / Path('dataset/fulldata')
 labelPath:Path = startDir / Path('dataset/labels')
+
 dataFnameSet:set = set(map(lambda x: x.name, dataPath.glob('*.csv')))
 labelFnameSet:set = set(map(lambda x: x.name, labelPath.glob('*.csv')))
 
 fileNames:list = list(set.intersection(dataFnameSet, labelFnameSet))
 
 
-def GetRawDataFromOrigin(includeInvalid=False):
+def GetTrueLabels(fileName):
+    series = pd.read_csv(labelPath / fileName)['third_class']
+    index = series.map(thirdClasses)
+    nonanindex = index.fillna(-1)
+    intindex = nonanindex.astype(int)
+    return list(intindex)
+
+
+def GetRawDataFromOrigin(includeInvalid=False, toIndex=True):
     allDf = []
+
+    # processing one data file and one label file (two files)
     for fileName in tqdm(fileNames):
         data = pd.read_csv(dataPath / fileName)
         data = data.drop(columns=['CITY_NAME'])
-        data['OBJECT_TYPE'] = data['OBJECT_TYPE'].map(objectTypes)
+        if toIndex:
+            data['OBJECT_TYPE'] = data['OBJECT_TYPE'].map(objectTypes)
 
         label = pd.read_csv(labelPath / fileName)
         label['TIMESTAMP'] = data.TIMESTAMP.unique()
-        label['first_class'] = label['first_class'].map(firstClasses)
-        label['second_class'] = label['second_class'].map(secondClasses)
-        label['third_class'] = label['third_class'].map(thirdClasses)
+        if toIndex:
+            label['first_class'] = label['first_class'].map(firstClasses)
+            label['second_class'] = label['second_class'].map(secondClasses)
+            label['third_class'] = label['third_class'].map(thirdClasses)
 
         df = data.merge(label, on='TIMESTAMP')
         if includeInvalid:
-            df = df.fillna(-1)
-        df = df.dropna()
+            df = df.fillna(-1)  # if any nan occurs, toIndex is true
+        else:
+            df = df.dropna()
+
         df['fileName'] = fileName
-        df['first_class'] = df['first_class'].astype('int')
-        df['second_class'] = df['second_class'].astype('int')
-        df['third_class'] = df['third_class'].astype('int')
-        df['OBJECT_TYPE'] = df['OBJECT_TYPE'].astype('int')
+
+        if toIndex:
+            df['first_class'] = df['first_class'].astype('int')
+            df['second_class'] = df['second_class'].astype('int')
+            df['third_class'] = df['third_class'].astype('int')
+            df['OBJECT_TYPE'] = df['OBJECT_TYPE'].astype('int')
+            
         allDf.append(df)
 
     return pd.concat(allDf)
@@ -74,29 +92,29 @@ def GetCachedRawVideos(csvName='out/raw.csv'):
 def ProcessVideos(videos: dict):
     processed = {}
 
-    def valuable(my, agent):
+    # def valuable(my, agent):
         # return agent['type'] > -1   # return True
-        return vor(
-            vand(
-                -3 <= agent['x'],
-                agent['x'] <= 3,
-                -10 <= agent['theta'],
-                agent['theta'] <= 10,
-            ),
-            vand(
-                -90 <= agent['theta'],
-                agent['theta'] <= 90,
-                agent['r'] <= 15,
-            ),
-            vand(
-                agent['yaw']-agent['theta'] >= 20,
-                agent['r'] <= 30,
-                -90 <= agent['theta'],
-                agent['theta'] <= 90,
-                agent['y'] >= 0,
-            ),
-            agent['type'] == 0
-        )
+        # return vor(
+        #     vand(
+        #         -3 <= agent['x'],
+        #         agent['x'] <= 3,
+        #         -10 <= agent['theta'],
+        #         agent['theta'] <= 10,
+        #     ),
+        #     vand(
+        #         -90 <= agent['theta'],
+        #         agent['theta'] <= 90,
+        #         agent['r'] <= 15,
+        #     ),
+        #     vand(
+        #         agent['yaw']-agent['theta'] >= 20,
+        #         agent['r'] <= 30,
+        #         -90 <= agent['theta'],
+        #         agent['theta'] <= 90,
+        #         agent['y'] >= 0,
+        #     ),
+        #     agent['type'] == 0
+        # )
 
     for fileName, video in videos.items():
         for frame in video:
@@ -122,7 +140,7 @@ def ProcessVideos(videos: dict):
             processedFrame['second_class'] = frame['second_class']
             processedFrame['third_class'] = frame['third_class']
 
-            processedFrame = processedFrame[valuable(my, processedFrame)]
+            # processedFrame = processedFrame[valuable(my, processedFrame)]
 
             processed[fileName].append(processedFrame)
 
