@@ -42,12 +42,14 @@ a crossing vehicle and the future current vehicle could have
 1. a mid-range FD
 2. a larger CD
 3. a VDD nearing +-90 degrees
+4. if a vehicle is crossing the future current vehicle in the near future or past, it is probably also doing that right now.
 
 a cutin vehicle ...
 1. a larger FD
 2. a mid-range CD
 3. a somewhat larger VDD
 4. velocity goes inwards
+5. if the vehicle is directly cutting in the future vehicle in the near future, it is probably cutting in right now.
 
 a cutout vehicle ...
 1. a larger FD
@@ -60,3 +62,16 @@ with these vehicles classified, these labels will be somewhat adequately classif
 ## 2024-10-17
 
 Implement vehicle classification within agent class (yet to propagate that api change to dependent functions (functions that are using agent functions))
+
+## 2024-10-18
+
+Implement lead vehicle classification with new agent class methods.
+
+## 2024-10-20
+
+Implement stop and wait classification
+
+## 2024-10-22
+
+1. Fix function inconsistencies and implement the other three classifications (which are the same)
+2. Conduct General Test

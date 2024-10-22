@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import cratutils as u
 import helpers as h
@@ -8,13 +7,13 @@ import matplotlib.pyplot as plt
 ########## Top Level Variables ##########
 
 
-# TODO write comment for all variables
-SELF_FRAMES_BEFORE = 0
-OTHERS_FRAMES_BEFORE = 2
-FRAMES_BEFORE = max(SELF_FRAMES_BEFORE, OTHERS_FRAMES_BEFORE)
-SELF_FRAMES_AFTER = 5
-OTHERS_FRAMES_AFTER = 2
-FRAMES_AFTER = max(SELF_FRAMES_AFTER, OTHERS_FRAMES_AFTER)
+FORWARD_EGO_ANCHOR_COUNT = 5
+FORWARD_CUTIN_ANCHOR_COUNT = 3
+FORWARD_CROSSING_ANCHOR_COUNT = 3
+BACKWARD_CROSSING_ANCHOR_COUNT = 2
+
+TIME_PADDING_FRONT = 2
+TIME_PADDING_END = 5
 
 
 ########## Agent: Utility Abstraction Class ##########
@@ -45,7 +44,7 @@ class Agent():
         self.rtheta = h.arctan(self.x, self.y)
         
         # projection of acceleration vector to speed vector, "l" stands for "leading"
-        self.f_ar = self.ar * np.cos(self.vtheta - self.atheta)
+        self.f_ar = self.ar * h.cos(self.vtheta - self.atheta)
 
     
     def faSmall(self) -> bool:      # TODO: tune the number (currently 0.5) for these four functions 
@@ -126,6 +125,23 @@ class Agent():
         and 60 < abs(vdd) < 120
     
 
+    def matchAnchorAsCutIn(self, anchor: 'Agent') -> bool:
+        dx = self.x - anchor.x
+        dy = self.y - anchor.y
+
+        distance = h.dist(dx, dy)
+        direction = h.to180scale(h.arctan(dx, dy) - anchor.yaw)
+
+        fd = distance * h.cos(direction)    # see DEVNOTES for explanation
+        cd = distance * h.sin(direction)
+        vdd = h.to180scale(self.vtheta - anchor.vtheta)
+
+        return abs(fd) < 5 \
+        and 1 < abs(cd) < 7 \
+        and 10 < abs(vdd) < 50 \
+        and vdd * cd < 0
+    
+
     def canBeCuttingInInFront(self, ego: 'Agent') -> bool:
         dx = self.x - ego.x
         dy = self.y - ego.y
@@ -142,6 +158,23 @@ class Agent():
         return yd * cd < 0 \
         and vdd * cd < 0 \
         and fd > 1 \
+        
+
+    def matchAnchorAsCutOut(self, anchor: 'Agent') -> bool:
+        dx = self.x - anchor.x
+        dy = self.y - anchor.y
+
+        distance = h.dist(dx, dy)
+        direction = h.to180scale(h.arctan(dx, dy) - anchor.yaw)
+
+        fd = distance * h.cos(direction)    # see DEVNOTES for explanation
+        cd = distance * h.sin(direction)
+        vdd = h.to180scale(self.vtheta - anchor.vtheta)
+
+        return abs(fd) < 5 \
+        and 1 < abs(cd) < 7 \
+        and 10 < abs(vdd) < 50 \
+        and vdd * cd > 0
     
 
     def canBeCuttingOutInFront(self, ego: 'Agent') -> bool:
@@ -167,7 +200,7 @@ class Agent():
 
 
 
-def PlotAgents(agents, greenIf=None, showA=False, egoInd=0, xsize=50, ysize=50, ystart=0, dpi=80):
+def PlotAgents(agents, greenIf=None, a=False, xsize=50, ysize=50, ystart=0, dpi=80, onlyCars=False):
     if greenIf is None:
         greenIf = lambda agent, ego: agent.isInFrontOf(ego)
 
@@ -177,7 +210,7 @@ def PlotAgents(agents, greenIf=None, showA=False, egoInd=0, xsize=50, ysize=50, 
     plt.axhline(0, color='black', linewidth=0.8)
     plt.axvline(0, color='black', linewidth=0.8)
 
-    ego = agents[egoInd]
+    ego = agents[0]
 
     def getColor(agent: Agent):
         if agent.id == 'ego':
@@ -188,8 +221,16 @@ def PlotAgents(agents, greenIf=None, showA=False, egoInd=0, xsize=50, ysize=50, 
             return 'green'
         else:
             return 'purple'
+
+    def getAccelerationColor(agent: Agent):
+        if agent.f_ar < 0:
+            return '#770000'    # dark red
+        return '#000077'    # dark blue
     
     for agent in agents:
+        if onlyCars and u.objectTypeNames[agent.type] not in ['AV', 'Vehicle']:
+            continue
+
         x = agent.x - ego.x
         y = agent.y - ego.y
 
@@ -200,10 +241,10 @@ def PlotAgents(agents, greenIf=None, showA=False, egoInd=0, xsize=50, ysize=50, 
                   fc=color, 
                   ec=color)
         
-        if (showA):
+        if a:
             # Plot acceleration as an arrow
-            accelerationColor = 'blue'
-            plt.arrow(x, y, agent.ax, agent.ay,
+            accelerationColor = getAccelerationColor(agent)
+            plt.arrow(x, y, agent.ax*10, agent.ay*10,
                     head_width=1, head_length=2, 
                     fc=accelerationColor, 
                     ec=accelerationColor)
@@ -240,7 +281,8 @@ class Trajectories():
 
 
     def getFrame(self, ti) -> pd.DataFrame:
-        return self.frames[ti].copy()
+        try: return self.frames[ti].copy()
+        except: return pd.DataFrame()
         # return self.allFrames[self.allFrames['ti'] == ti].copy()
     
 
@@ -250,30 +292,40 @@ class Trajectories():
         agentRows = frame[frame['TRACK_ID'] == agentId]
 
         if len(agentRows) == 0:
-            return None
+            return Exception(f'No agent has the given id "{agentId}".')
         
         elif len(agentRows) == 1:
             return Agent(agentRows.iloc[0])
 
         else:
-            raise Exception('Multiple agents have the same id.')
+            raise Exception(f'Multiple agents have the given id "{agentId}".')
         
 
-    def getAgentByCode(self, ti, agentId) -> Agent:
+    def getAgentByCode(self, ti, agentCode) -> Agent:
         frame = self.getFrame(ti)
-        agentRows = frame[frame['TRACK_ID'].apply(lambda x : x.split("-")[-1] == str(agentId))]
-        return Agent(agentRows.iloc[0])
+
+        agentRows = frame[frame['TRACK_ID'].apply(lambda x : x.split("-")[-1] == str(agentCode))]
+
+        if len(agentRows) == 0:
+            return Exception(f'No agent has the given code "{agentCode}".')
+        
+        elif len(agentRows) == 1:
+            return Agent(agentRows.iloc[0])
+
+        else:
+            raise Exception(f'Multiple agents have the given code "{agentCode}".')
     
     
-    def getTrajectory(self, tiStart, maxDelta, agentId):
+    def getTrajectory(self, agentId, tiStart, tiEnd):
         '''
         Returns generator showing probable states of the given agent in the future.
 
         Currently simply returns known future states (positions). 
+
         TODO: implement state extrapolation with kinematic features (v, a, etc.)
         '''
 
-        for ti in range(tiStart, tiStart+maxDelta):
+        for ti in range(tiStart, tiEnd):
             frame = self.getFrame(ti)
 
             if len(frame) == 0:
@@ -316,6 +368,8 @@ def ClassifyVideo(video):
     '''
     Takes in a list of DataFrames, each DataFrame contains rows of agents, each with its kinematic features and ids and more.
     Outputs a list of label indices (ints) determined for each frame in this video.
+
+    (i.e. each dataframe corresponds to an int)
     '''
 
     labels = []
@@ -323,13 +377,10 @@ def ClassifyVideo(video):
     trajectories = Trajectories(video)
 
     # Only these timestamps are classified, labels in the beginning and end of the video are inferred
-    concernedTimeIndices = range(
-        FRAMES_BEFORE,                      # exactly FRAMES_BEFORE elements are before index FRAMES_BEFORE
-        u.FRAMES_PER_VID - FRAMES_AFTER     # exactly FRAMES_AFTER elements are after index FRAMES_PER_VID - FRAMES_AFTER - 1
-    )
+    concernedTimeIndices = range(TIME_PADDING_FRONT, u.FRAMES_PER_VID - TIME_PADDING_END)
 
     if len(concernedTimeIndices) == 0:
-        raise Exception('Too many frames truncated from the beginning and end.')
+        raise Exception('Cannot infer labels in the front and end: no frames are classified in the middle.')
 
     # Classify the frames in the middle
     for ti in concernedTimeIndices:
@@ -337,9 +388,7 @@ def ClassifyVideo(video):
         labels.append(label)
 
     # Infer labels for the beginning and end of the video
-    firstLabel = labels[0]
-    lastLabel = labels[-1]
-    labels = [firstLabel] * FRAMES_BEFORE + labels + [lastLabel] * FRAMES_AFTER
+    labels = ([labels[0]]*TIME_PADDING_FRONT) + labels + ([labels[-1]]*TIME_PADDING_END)
 
     assert(len(labels) == u.FRAMES_PER_VID)
     
@@ -376,55 +425,86 @@ def ClassifyFrame(ti, trajectories: Trajectories):
 
 def ClassifyInLaneFrame(ti, trajectories: Trajectories):
 
-    # Labels and high-level variables
-    # '1.1.1 LeadVehicleConstant'           haslead, a_small
-    # '1.1.2 LeadVehicleCutOut'             haslead, leadcut
+    # Labels and high-level variables (The manual decision Tree)
+
+    # '1.1.1 LeadVehicleConstant'           haslead && a_small
+    # '1.1.2 LeadVehicleCutOut'             cutout
     # '1.1.3 VehicleCutInAhead'             cutin
-    # '1.1.4 LeadVehicleDecelerating'       haslead, a_neg
-    # '1.1.5 LeadVehicleStppoed'            haslead, v_small
-    # '1.1.6 LeadVehicleAccelerating'       haslead, a_pos
+    # '1.1.4 LeadVehicleDecelerating'       haslead && a_neg
+    # '1.1.5 LeadVehicleStppoed'            haslead && v_small
+    # '1.1.6 LeadVehicleAccelerating'       haslead && a_pos
     # '1.1.7  LeadVehicleWrongDriveway'     whatever (TODO)
 
 
     # Set initial state of high-level variables (prevent unassigned variables)
     cutIn = False
+    cutOut = False
     hasLead = False
+    leading = None
 
-    # Set future ego as anchor
-    for egoAnchor in trajectories.getTrajectory(ti, maxDelta=SELF_FRAMES_AFTER, agentId='ego'):
+    ego = trajectories.getEgo(ti)
 
-        # Get agents that are probably cutting in front of the currentEgo based on its relationship with the anchor
-        cutInAgents = GetPossibleCutInAgentsAroundAnchor(egoAnchor, ti, trajectories)
-
-        # Set high-level variables based on the result and stop searching further into the future.
-        if len(cutInAgents) > 0:
-            cutIn = True
-            hasLead = False
-            break
-
-        # Get the agent that is most probably leading the currentEgo based on its relationship with the anchor
-        leadingAgent: Agent = GetLeadingAgentAroundAnchor(egoAnchor, ti, trajectories)
-
-        # Set high-level variables based on the result and stop searching further into the future.
-        if leadingAgent is not None:
-            cutIn = False
+    # check if there are agents leading the current vehicle directly.
+    for agent in trajectories.getNonEgoAgents(ti):
+        if agent.isLeadingDirectly(ego):    # TODO: tighten the function to avoid flase positives
             hasLead = True
-            LaNeg, LaSmall, LaPos, LvSmall = \
-            leadingAgent.laNeg(), leadingAgent.laSmall(), \
-            leadingAgent.laPos(), leadingAgent.vSmall()
-
-            currentEgo = trajectories.getEgo(ti)
-            leadCut = leadingAgent.canBeCuttingOutInFront(currentEgo)
-            
+            leading = agent
             break
 
+    # "anchor" means the agent's position in the future
+    # it basically help determine if two cars may meet in the future
+    egoAnchorTi = ti
+    for egoAnchor in trajectories.getTrajectory('ego', ti+1, ti+FORWARD_EGO_ANCHOR_COUNT):
+
+        egoAnchorTi += 1
+
+        if cutIn or hasLead:
+            break
+
+        # Check for cutIn
+        for agent in trajectories.getNonEgoAgents(ti):
+
+            if cutIn:
+                break   # we've already found a cutIn vehicle (TODO: add logic to ensure the thing cutting in is really a "vehicle")
+
+            if not agent.canBeCuttingInInFront(ego):        # TODO loosen the function to prevent false negatives
+                continue    # if it's downright impossible for the agent to cut in front of ego, just ignore it
+
+            for agentAnchor in trajectories.getTrajectory(agent.id, egoAnchorTi+1, ti+FORWARD_CUTIN_ANCHOR_COUNT):
+                if agentAnchor.matchAnchorAsCutIn(egoAnchor):
+                    cutIn = True
+                    break
+
+        if cutIn:
+            break   # the scene will be classified as cutin instead of leading, so leading wouldn't matter
+
+        # Check for leading and cutout
+        for agent in trajectories.getNonEgoAgents(ti):
+
+            if hasLead:
+                break   # we've already found a leading vehicle
+
+            if agent.matchAnchorAsCutOut(egoAnchor) and agent.canBeCuttingOutInFront(ego):
+                cutOut = True
+                break
+
+            if agent.matchAnchorAsLeading(egoAnchor):
+                hasLead = True
+                leading = agent
+                break
+
+    # Define variables needed for the decision tree
+    if hasLead:
+        LaNeg, LaSmall, LaPos, LvSmall = \
+        leading.faNeg(), leading.faSmall(), \
+        leading.faPos(), leading.vSmall()
 
     # Return a label based on the high-level variables
     if cutIn:
         return u.secondClasses['1.1.3 VehicleCutInAhead']
+    if cutOut:
+        return u.secondClasses['1.1.2 LeadVehicleCutOut']
     if hasLead:
-        if leadCut:
-            return u.secondClasses['1.1.2 LeadVehicleCutOut']
         if LvSmall:
             return u.secondClasses['1.1.5 LeadVehicleStppoed']
         if LaNeg:
@@ -433,10 +513,7 @@ def ClassifyInLaneFrame(ti, trajectories: Trajectories):
             return u.secondClasses['1.1.6 LeadVehicleAccelerating']
         if LaSmall:
             return u.secondClasses['1.1.1 LeadVehicleConstant']
-    
 
-    # print("BAD Stuff")
-    # print(trajectories.getFrame(ti))
     return -1      # '9.9.9 Invalid'
 
 
@@ -445,22 +522,32 @@ def ClassifyStopAndWaitFrame(ti, trajectories: Trajectories):
     # '2.1.4 LeadVehicleStppoed'        haslead
     # '2.1.5 PedestrianCrossing'        has pedestrians
 
+    ego = trajectories.getEgo(ti)
+    minVehicleDistance = 9999   # find this to check if the pedestrian is before the vehicle 
 
-    currentEgo = trajectories.getEgo(ti)
-    
-    canBePedestrainsCrossing = False
-
+    # first check if there are leading vehicles
     for agent in trajectories.getNonEgoAgents(ti):
-        if agent.canBeDirectlyLeading(currentEgo) and agent.type == 'Vehicle':
-            return u.secondClasses['2.1.4 LeadVehicleStppoed']
-        if agent.isInFrontOf(currentEgo) and agent.type == 'Pedestrian':
-            canBePedestrainsCrossing = True
+        if agent.isLeadingDirectly(ego) and u.objectTypeNames[agent.type] == 'Vehicle':
+            distance = h.dist(agent.x - ego.x, agent.y - ego.y)
+            angle = h.arctan(agent.x - ego.x, agent.y - ego.y) - ego.yaw
+            minVehicleDistance = min(minVehicleDistance, distance * h.cos(angle))
+    
+    # then check pedestrians that are between the lead vehicle (possibly nonexistent) and ego
+    for agent in trajectories.getNonEgoAgents(ti):
+        if agent.isInFrontOf(ego):
+            distance = h.dist(agent.x - ego.x, agent.y - ego.y)
+            angle = h.arctan(agent.x - ego.x, agent.y - ego.y) - ego.yaw
+            f_distance = min(minVehicleDistance, distance * h.cos(angle))
+            if f_distance < minVehicleDistance and u.objectTypeNames[agent.type] in ['Pedestrian', 'Bicycle']:
+                return u.secondClasses['2.1.5 PedestrianCrossing']
+    
+    if minVehicleDistance < 9999:       # we found a leading car and there are no relevant pedestrians
+        return u.secondClasses['2.1.4 LeadVehicleStppoed']
 
-    return u.secondClasses['2.1.5 PedestrianCrossing'] if canBePedestrainsCrossing else '9.9.9 Invalid'
+    return '9.9.9 Invalid'
 
 
 '''Below are a few repetitive functions to leave room for individual optimization (turnleft, turnright, and gostraight)'''
-# TODO: implement those properly (they currently do not make sense)
 
 
 def ClassifyGoStraightFrame(ti, trajectories: Trajectories):
@@ -469,36 +556,34 @@ def ClassifyGoStraightFrame(ti, trajectories: Trajectories):
     # '2.4.2 WithLeadVehicle'           haslead
     # '2.4.3 VehiclesCrossing'          hascross
 
-
-    # Set initial state of high-level variables
+    # Set initial state of high-level variables (prevent unassigned variables)
     hasCross = False
     hasLead = False
 
-    # Keep track of current ego as reference point
-    currentEgo = trajectories.getEgo(ti)
+    ego = trajectories.getEgo(ti)
 
-    # Set future ego as anchor
-    for egoAnchor in trajectories.getTrajectory(ti, maxDelta=SELF_FRAMES_AFTER, agentId='ego'):
+    for egoAnchor in trajectories.getTrajectory('ego', ti+1, ti+FORWARD_EGO_ANCHOR_COUNT):
 
-        # Get the agent that most probably is crossing the currentEgo based on its relationship with the virtual agent
-        crossingAgents = GetPossibleCrossingAgentsAroundAnchor(egoAnchor, ti, trajectories)
-
-        # Set high-level variables based on the result and stop searching further into the future.
-        if len(crossingAgents) > 0:
-            hasCross = True
-            hasLead = False
+        if hasCross or hasLead:
             break
 
-        # Get the agent that most probably is leading the currentEgo based on its relationship with the virtual agent
-        leadingAgent: Agent = GetLeadingAgentAroundAnchor(egoAnchor, currentEgo, trajectories)
+        for agent in trajectories.getNonEgoAgents(ti):
 
-        # Set high-level variables based on the result and stop searching further into the future.
-        if leadingAgent is not None:
-            hasCross = False
-            hasLead = True
-            break
+            # check for crossing in the past and the future
+            for agentAnchor in trajectories.getTrajectory(agent.id, ti-BACKWARD_CROSSING_ANCHOR_COUNT, ti+FORWARD_CROSSING_ANCHOR_COUNT):
+                
+                if agentAnchor.matchAnchorAsCrossing(egoAnchor):
+                    hasCross = True
+                    break
+            
+            if hasCross:
+                break
+            
+            # check for leading now
+            if agent.matchAnchorAsLeading(egoAnchor):
+                hasLead = True
+                break
 
-    
     # Return a label based on the high-level variables
     if hasCross:
         return u.secondClasses['2.4.3 VehiclesCrossing']
@@ -513,36 +598,34 @@ def ClassifyTurnLeftFrame(ti, trajectories: Trajectories):
     # '2.5.2 WithLeadVehicle'           haslead
     # '2.5.3 VehiclesCrossing'          hascross
 
-
-    # Set initial state of high-level variables
+    # Set initial state of high-level variables (prevent unassigned variables)
     hasCross = False
     hasLead = False
 
-    # Keep track of current ego as reference point
-    currentEgo = trajectories.getEgo(ti)
+    ego = trajectories.getEgo(ti)
 
-    # Set future ego as anchor
-    for egoAnchor in trajectories.getTrajectory(ti, maxDelta=SELF_FRAMES_AFTER, agentId='ego'):
+    for egoAnchor in trajectories.getTrajectory('ego', ti+1, ti+FORWARD_EGO_ANCHOR_COUNT):
 
-        # Get the agent that most probably is crossing the currentEgo based on its relationship with the virtual agent
-        crossingAgents = GetPossibleCrossingAgentsAroundAnchor(egoAnchor, ti, trajectories)
-
-        # Set high-level variables based on the result and stop searching further into the future.
-        if len(crossingAgents) > 0:
-            hasCross = True
-            hasLead = False
+        if hasCross or hasLead:
             break
 
-        # Get the agent that most probably is leading the currentEgo based on its relationship with the virtual agent
-        leadingAgent: Agent = GetLeadingAgentAroundAnchor(egoAnchor, currentEgo, trajectories)
+        for agent in trajectories.getNonEgoAgents(ti):
 
-        # Set high-level variables based on the result and stop searching further into the future.
-        if leadingAgent is not None:
-            hasCross = False
-            hasLead = True
-            break
+            # check for crossing in the past and the future
+            for agentAnchor in trajectories.getTrajectory(agent.id, ti-BACKWARD_CROSSING_ANCHOR_COUNT, ti+FORWARD_CROSSING_ANCHOR_COUNT):
+                
+                if agentAnchor.matchAnchorAsCrossing(egoAnchor):
+                    hasCross = True
+                    break
+            
+            if hasCross:
+                break
+            
+            # check for leading now
+            if agent.matchAnchorAsLeading(egoAnchor):
+                hasLead = True
+                break
 
-    
     # Return a label based on the high-level variables
     if hasCross:
         return u.secondClasses['2.5.3 VehiclesCrossing']
@@ -558,35 +641,34 @@ def ClassifyTurnRightFrame(ti, trajectories: Trajectories):
     # '2.6.3 VehiclesCrossing'          hascross
 
 
-    # Set initial state of high-level variables
+    # Set initial state of high-level variables (prevent unassigned variables)
     hasCross = False
     hasLead = False
 
-    # Keep track of current ego as reference point
-    currentEgo = trajectories.getEgo(ti)
+    ego = trajectories.getEgo(ti)
 
-    # Set future ego as anchor
-    for egoAnchor in trajectories.getTrajectory(ti, maxDelta=SELF_FRAMES_AFTER, agentId='ego'):
+    for egoAnchor in trajectories.getTrajectory('ego', ti+1, ti+FORWARD_EGO_ANCHOR_COUNT):
 
-        # Get the agent that most probably is crossing the currentEgo based on its relationship with the virtual agent
-        crossingAgents = GetPossibleCrossingAgentsAroundAnchor(egoAnchor, ti, trajectories)
-
-        # Set high-level variables based on the result and stop searching further into the future.
-        if len(crossingAgents) > 0:
-            hasCross = True
-            hasLead = False
+        if hasCross or hasLead:
             break
 
-        # Get the agent that most probably is leading the currentEgo based on its relationship with the virtual agent
-        leadingAgent: Agent = GetLeadingAgentAroundAnchor(egoAnchor, currentEgo, trajectories)
+        for agent in trajectories.getNonEgoAgents(ti):
 
-        # Set high-level variables based on the result and stop searching further into the future.
-        if leadingAgent is not None:
-            hasCross = False
-            hasLead = True
-            break
+            # check for crossing in the past and the future
+            for agentAnchor in trajectories.getTrajectory(agent.id, ti-BACKWARD_CROSSING_ANCHOR_COUNT, ti+FORWARD_CROSSING_ANCHOR_COUNT):
+                
+                if agentAnchor.matchAnchorAsCrossing(egoAnchor):
+                    hasCross = True
+                    break
+            
+            if hasCross:
+                break
+            
+            # check for leading now
+            if agent.matchAnchorAsLeading(egoAnchor):
+                hasLead = True
+                break
 
-    
     # Return a label based on the high-level variables
     if hasCross:
         return u.secondClasses['2.6.3 VehiclesCrossing']
@@ -594,82 +676,7 @@ def ClassifyTurnRightFrame(ti, trajectories: Trajectories):
         return u.secondClasses['2.6.2 WithLeadVehicle']
     else:
         return u.secondClasses['2.6.1 NoVehiclesAhead']
-
+    
 
 def ClassifyUTurnFrame(ti, trajectory: Trajectories):
     return u.secondClasses['2.7.1 NoVehiclesAhead']
-
-
-
-########## Helper Functions for "second_class" Classification Functions ##########
-
-
-
-def GetPossibleCutInAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories) -> list:
-    currentEgo = trajectories.getEgo(ti)
-
-    possibleCutInAgents = []
-
-    startTi = ti                        # agents can be in the future route at least zero frames in the future
-    maxDeltas = OTHERS_FRAMES_AFTER     # agents can be in the future route at most OTHERS_FRAMES_AFTER frames in the future
-    minDeltas = maxDeltas               # everytime we find a cutin agent, we update the minDeltas, this way the most recent cutin agents are found
-
-    for agent in trajectories.getNonEgoAgents(ti):
-        for deltas, agentAnchor in enumerate(trajectories.getTrajectory(startTi, minDeltas, agent.id)):
-            # "agentAnchor" means the agent's position in the future
-            # this function basically tests whether any agent in the future will be on the
-            # future route of "currentEgo", and it specifically considers a specific point on the ego route 
-            # which is known as "egoAnchor"
-
-            # the agent is not concerned in this particular delta
-            if agentAnchor is None:
-                continue
-
-            if agentAnchor.quiteSameAs(egoAnchor) and agent.canBeCuttingInInFront(currentEgo):
-                possibleCutInAgents.append(agent)
-
-                if deltas < minDeltas:
-                    possibleCutInAgents.clear()
-                    minDeltas = deltas
-
-                # this break means this agent is classified as "possible to cut in" already
-                break
-    
-    return possibleCutInAgents
-
-
-def GetLeadingAgentAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories) -> Agent | None:
-    currentEgo = trajectories.getEgo(ti)
-
-    for agent in trajectories.getNonEgoAgents(ti):
-        if agent.quiteSameAs(egoAnchor) or agent.canBeDirectlyLeading(currentEgo):
-            # the "or" in this statement ensures the case where currentEgo has stopped and does not have 
-            # a trajectory that can be used to decide on leading agents. 
-            return agent
-    return None
-
-
-def GetPossibleCrossingAgentsAroundAnchor(egoAnchor: Agent, ti, trajectories: Trajectories) -> list:
-    currentEgo = trajectories.getEgo(ti)
-
-    possibleCrossingAgents = []
-
-    startTi = ti-OTHERS_FRAMES_BEFORE
-    maxDeltas = ti+OTHERS_FRAMES_AFTER
-
-    for agent in trajectories.getNonEgoAgents(ti):
-        for agentAnchor in trajectories.getTrajectory(startTi, maxDeltas, agent.id):
-            # "agentAnchor" means the agent's position in the future
-            # this function basically tests whether any agent in the past or future will be on the
-            # future route of "currentEgo", and it specifically considers a specific point on the ego route 
-            # which is known as "egoAnchor"
-
-            # the agent is not concerned in this particular delta
-            if agentAnchor is None:
-                continue
-
-            if agentAnchor.crossingDirectly(egoAnchor) and agent.canBeCrossing(currentEgo):
-                possibleCrossingAgents.append(agent)
-
-                # this break means this agent is classified as "possible to cut in" already
-                break
