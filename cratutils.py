@@ -300,6 +300,7 @@ thirdClassNames = {
     16: '2.6.2 WithLeadVehicle',
     17: '2.6.3 VehiclesCrossing',
     18: '2.7.1 NoVehiclesAhead',
+    -1: '9.9.9 Invalid'
 }
 
 #---

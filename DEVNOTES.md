@@ -75,3 +75,12 @@ Implement stop and wait classification
 
 1. Fix function inconsistencies and implement the other three classifications (which are the same)
 2. Conduct General Test
+
+Non-trivial Problems Encountered During General Test
+
+1. used np.cos instead of h.cos once, remember to always use helper functions in h instead of np.
+2. leading agents are often very far away, therefore a long extrapolation is required (i.e. the ego would be at the leading agent's place after a long time.) 
+    - This often leads to invalid classification results.
+
+Fixes in General Test
+1. Tighten the leading function a bit

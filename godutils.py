@@ -90,7 +90,8 @@ class Agent():
 
         return abs(fd) < 5 \
         and abs(cd) < 3 \
-        and abs(vdd) < 30
+        and abs(vdd) < 30 \
+        and u.objectTypeNames[self.type] in ['Vehicle']
 
 
     def isLeadingDirectly(self, ego: 'Agent') -> bool:
@@ -104,9 +105,11 @@ class Agent():
         cd = distance * h.sin(direction)
         yd = h.to180scale(self.yaw - ego.yaw)         # Yaw distance
 
-        return abs(cd) < 2 \
+        return self.isInFrontOf(ego) \
+        and abs(cd) < 1 \
         and 1 < fd < 20 \
-        and abs(yd) < 10
+        and abs(yd) < 10 \
+        and u.objectTypeNames[self.type] in ['Vehicle']
 
 
     def matchAnchorAsCrossing(self, anchor: 'Agent') -> bool:
@@ -122,7 +125,8 @@ class Agent():
 
         return abs(fd) < 4 \
         and abs(cd) < 8 \
-        and 60 < abs(vdd) < 120
+        and 60 < abs(vdd) < 120 \
+        and u.objectTypeNames[self.type] in ['Vehicle']
     
 
     def matchAnchorAsCutIn(self, anchor: 'Agent') -> bool:
@@ -139,7 +143,8 @@ class Agent():
         return abs(fd) < 5 \
         and 1 < abs(cd) < 7 \
         and 10 < abs(vdd) < 50 \
-        and vdd * cd < 0
+        and vdd * cd < 0 \
+        and u.objectTypeNames[self.type] in ['Vehicle']
     
 
     def canBeCuttingInInFront(self, ego: 'Agent') -> bool:
@@ -158,6 +163,7 @@ class Agent():
         return yd * cd < 0 \
         and vdd * cd < 0 \
         and fd > 1 \
+        and u.objectTypeNames[self.type] in ['Vehicle']
         
 
     def matchAnchorAsCutOut(self, anchor: 'Agent') -> bool:
@@ -174,7 +180,8 @@ class Agent():
         return abs(fd) < 5 \
         and 1 < abs(cd) < 7 \
         and 10 < abs(vdd) < 50 \
-        and vdd * cd > 0
+        and vdd * cd > 0 \
+        and u.objectTypeNames[self.type] in ['Vehicle']
     
 
     def canBeCuttingOutInFront(self, ego: 'Agent') -> bool:
@@ -193,6 +200,7 @@ class Agent():
         return yd * cd > 0 \
         and vdd * cd > 0 \
         and fd > 1 \
+        and u.objectTypeNames[self.type] in ['Vehicle']
         
 
 
@@ -200,7 +208,33 @@ class Agent():
 
 
 
-def PlotAgents(agents, greenIf=None, a=False, xsize=50, ysize=50, ystart=0, dpi=80, onlyCars=False):
+def PlotAgents(agents,
+               greenIf=None,
+               greenOnly=False,
+               a=False,
+               bigA=True,
+               xsize=50,
+               ysize=50,
+               ystart=0,
+               dpi=80,
+               onlyCars=False,
+               extra=[]):
+    '''
+    Plots a list of agents onto a 2d plane
+
+    Parameters:
+        agents: list<Agent>
+        greenIf: Agent, Agent -> bool: a function that takes in agent and ego and outputs if the agent will be green on the display. Default behavior is showing agents in front of ego as green
+        greenOnly: bool: show green vehicles only (green vehicles can be filtered via greenIf)
+        a: bool: whether to show an acceleration vector (arrow)
+        bigA: bool: whether to 10x the acceleration vector
+        xsize: int: horizontal size of the image
+        ysize: int: vertical size of the image
+        ystart: int: moves the image down this much (adds this value to minimum y)
+        onlyCars: show the ego and "Vehicles" only (instead of "Bicycles" and stuff)
+        extra: list<Agent>: extra agents to show
+    '''
+
     if greenIf is None:
         greenIf = lambda agent, ego: agent.isInFrontOf(ego)
 
@@ -227,15 +261,11 @@ def PlotAgents(agents, greenIf=None, a=False, xsize=50, ysize=50, ystart=0, dpi=
             return '#770000'    # dark red
         return '#000077'    # dark blue
     
-    for agent in agents:
-        if onlyCars and u.objectTypeNames[agent.type] not in ['AV', 'Vehicle']:
-            continue
-
+    def putAgent(agent:Agent, color):
         x = agent.x - ego.x
         y = agent.y - ego.y
 
         # Plot speed as an arrow
-        color = getColor(agent)
         plt.arrow(x, y, agent.vx, agent.vy,
                   head_width=1, head_length=2, 
                   fc=color, 
@@ -244,7 +274,8 @@ def PlotAgents(agents, greenIf=None, a=False, xsize=50, ysize=50, ystart=0, dpi=
         if a:
             # Plot acceleration as an arrow
             accelerationColor = getAccelerationColor(agent)
-            plt.arrow(x, y, agent.ax*10, agent.ay*10,
+            factor = 10 if bigA else 1
+            plt.arrow(x, y, agent.ax*factor, agent.ay*factor,
                     head_width=1, head_length=2, 
                     fc=accelerationColor, 
                     ec=accelerationColor)
@@ -254,6 +285,21 @@ def PlotAgents(agents, greenIf=None, a=False, xsize=50, ysize=50, ystart=0, dpi=
 
         plt.text(x, y, f'{agent.id.split("-")[-1][:2]}', ha='center', va='center', fontsize=9, color=color)
     
+
+    
+    for agent in agents:
+        if onlyCars and u.objectTypeNames[agent.type] not in ['AV', 'Vehicle']:
+            continue
+
+        if greenOnly and not greenIf(agent, ego):
+            continue
+
+        color = getColor(agent)
+        putAgent(agent, color)
+    
+    for agent in extra:
+        putAgent(agent, '#886600')
+        
 
     plt.xlim(-xsize, xsize)
     plt.ylim(-ysize+ystart, ysize+ystart)
@@ -307,7 +353,7 @@ class Trajectories():
         agentRows = frame[frame['TRACK_ID'].apply(lambda x : x.split("-")[-1] == str(agentCode))]
 
         if len(agentRows) == 0:
-            return Exception(f'No agent has the given code "{agentCode}".')
+            raise Exception(f'No agent has the given code "{agentCode}".')
         
         elif len(agentRows) == 1:
             return Agent(agentRows.iloc[0])
@@ -498,21 +544,22 @@ def ClassifyInLaneFrame(ti, trajectories: Trajectories):
         LaNeg, LaSmall, LaPos, LvSmall = \
         leading.faNeg(), leading.faSmall(), \
         leading.faPos(), leading.vSmall()
+        print('leading', leading.id)
 
     # Return a label based on the high-level variables
     if cutIn:
-        return u.secondClasses['1.1.3 VehicleCutInAhead']
+        return u.thirdClasses['1.1.3 VehicleCutInAhead']
     if cutOut:
-        return u.secondClasses['1.1.2 LeadVehicleCutOut']
+        return u.thirdClasses['1.1.2 LeadVehicleCutOut']
     if hasLead:
         if LvSmall:
-            return u.secondClasses['1.1.5 LeadVehicleStppoed']
+            return u.thirdClasses['1.1.5 LeadVehicleStppoed']
         if LaNeg:
-            return u.secondClasses['1.1.4 LeadVehicleDecelerating']
+            return u.thirdClasses['1.1.4 LeadVehicleDecelerating']
         if LaPos:
-            return u.secondClasses['1.1.6 LeadVehicleAccelerating']
+            return u.thirdClasses['1.1.6 LeadVehicleAccelerating']
         if LaSmall:
-            return u.secondClasses['1.1.1 LeadVehicleConstant']
+            return u.thirdClasses['1.1.1 LeadVehicleConstant']
 
     return -1      # '9.9.9 Invalid'
 
@@ -539,10 +586,10 @@ def ClassifyStopAndWaitFrame(ti, trajectories: Trajectories):
             angle = h.arctan(agent.x - ego.x, agent.y - ego.y) - ego.yaw
             f_distance = min(minVehicleDistance, distance * h.cos(angle))
             if f_distance < minVehicleDistance and u.objectTypeNames[agent.type] in ['Pedestrian', 'Bicycle']:
-                return u.secondClasses['2.1.5 PedestrianCrossing']
+                return u.thirdClasses['2.1.5 PedestrianCrossing']
     
     if minVehicleDistance < 9999:       # we found a leading car and there are no relevant pedestrians
-        return u.secondClasses['2.1.4 LeadVehicleStppoed']
+        return u.thirdClasses['2.1.4 LeadVehicleStppoed']
 
     return '9.9.9 Invalid'
 
@@ -586,11 +633,11 @@ def ClassifyGoStraightFrame(ti, trajectories: Trajectories):
 
     # Return a label based on the high-level variables
     if hasCross:
-        return u.secondClasses['2.4.3 VehiclesCrossing']
+        return u.thirdClasses['2.4.3 VehiclesCrossing']
     if hasLead:
-        return u.secondClasses['2.4.2 WithLeadVehicle']
+        return u.thirdClasses['2.4.2 WithLeadVehicle']
     else:
-        return u.secondClasses['2.4.1 NoVehiclesAhead']
+        return u.thirdClasses['2.4.1 NoVehiclesAhead']
 
 
 def ClassifyTurnLeftFrame(ti, trajectories: Trajectories):
@@ -628,11 +675,11 @@ def ClassifyTurnLeftFrame(ti, trajectories: Trajectories):
 
     # Return a label based on the high-level variables
     if hasCross:
-        return u.secondClasses['2.5.3 VehiclesCrossing']
+        return u.thirdClasses['2.5.3 VehiclesCrossing']
     if hasLead:
-        return u.secondClasses['2.5.2 WithLeadVehicle']
+        return u.thirdClasses['2.5.2 WithLeadVehicle']
     else:
-        return u.secondClasses['2.5.1 NoVehiclesAhead']
+        return u.thirdClasses['2.5.1 NoVehiclesAhead']
 
 
 def ClassifyTurnRightFrame(ti, trajectories: Trajectories):
@@ -671,12 +718,12 @@ def ClassifyTurnRightFrame(ti, trajectories: Trajectories):
 
     # Return a label based on the high-level variables
     if hasCross:
-        return u.secondClasses['2.6.3 VehiclesCrossing']
+        return u.thirdClasses['2.6.3 VehiclesCrossing']
     if hasLead:
-        return u.secondClasses['2.6.2 WithLeadVehicle']
+        return u.thirdClasses['2.6.2 WithLeadVehicle']
     else:
-        return u.secondClasses['2.6.1 NoVehiclesAhead']
+        return u.thirdClasses['2.6.1 NoVehiclesAhead']
     
 
 def ClassifyUTurnFrame(ti, trajectory: Trajectories):
-    return u.secondClasses['2.7.1 NoVehiclesAhead']
+    return u.thirdClasses['2.7.1 NoVehiclesAhead']
